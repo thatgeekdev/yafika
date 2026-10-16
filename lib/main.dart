@@ -29,12 +29,7 @@ class YafikaColors {
 // AUTH
 // ============================================================
 
-enum UserRole {
-  customer,
-  partner,
-  driver,
-  admin,
-}
+enum UserRole { customer, partner, driver, admin }
 
 extension UserRoleUi on UserRole {
   String get label {
@@ -110,10 +105,7 @@ class OrderLine {
   final Product product;
   final int quantity;
 
-  const OrderLine({
-    required this.product,
-    required this.quantity,
-  });
+  const OrderLine({required this.product, required this.quantity});
 
   double get subtotal => product.price * quantity;
 }
@@ -122,11 +114,7 @@ class OrderLine {
 // PAYMENT + DELIVERY
 // ============================================================
 
-enum PaymentMethod {
-  mpesa,
-  emola,
-  card,
-}
+enum PaymentMethod { mpesa, emola, card }
 
 extension PaymentMethodUi on PaymentMethod {
   String get label {
@@ -152,33 +140,61 @@ extension PaymentMethodUi on PaymentMethod {
   }
 }
 
-enum DriverPayoutStatus {
-  pending,
-  paid,
+extension CommissionRateUi on double {
+  String get percentageLabel {
+    final value = (this * 100).toStringAsFixed(2);
+    return value.replaceFirst(RegExp(r'\.?0+$'), '');
+  }
 }
 
-extension DriverPayoutStatusUi on DriverPayoutStatus {
+enum SettlementStatus { pending, eligible, paid }
+
+extension SettlementStatusUi on SettlementStatus {
   String get label {
     switch (this) {
-      case DriverPayoutStatus.pending:
+      case SettlementStatus.pending:
         return 'Pendente';
-      case DriverPayoutStatus.paid:
-        return 'Pago';
+      case SettlementStatus.eligible:
+        return 'Elegível para liquidação';
+      case SettlementStatus.paid:
+        return 'Registado como pago (demo)';
     }
   }
 }
 
-class PartnerPaymentProfile {
-  final String partnerName;
-  final String merchantName;
-  final String mpesaNumber;
-  final String emolaNumber;
+enum PaymentCollectionStatus {
+  awaitingConfirmation,
+  received,
+  failed,
+  refunded,
+}
 
-  const PartnerPaymentProfile({
-    required this.partnerName,
-    required this.merchantName,
-    required this.mpesaNumber,
-    required this.emolaNumber,
+extension PaymentCollectionStatusUi on PaymentCollectionStatus {
+  String get label {
+    switch (this) {
+      case PaymentCollectionStatus.awaitingConfirmation:
+        return 'A aguardar confirmação';
+      case PaymentCollectionStatus.received:
+        return 'Recebimento confirmado (demo)';
+      case PaymentCollectionStatus.failed:
+        return 'Falhado';
+      case PaymentCollectionStatus.refunded:
+        return 'Estornado';
+    }
+  }
+}
+
+class FinancialAuditEntry {
+  final String action;
+  final String reference;
+  final String actor;
+  final DateTime recordedAt;
+
+  const FinancialAuditEntry({
+    required this.action,
+    required this.reference,
+    required this.actor,
+    required this.recordedAt,
   });
 }
 
@@ -189,19 +205,10 @@ class DeliveryZone {
   /// Mais tarde este valor será substituído por Google Maps / Routes API.
   final double estimatedDistanceKm;
 
-  const DeliveryZone({
-    required this.name,
-    required this.estimatedDistanceKm,
-  });
+  const DeliveryZone({required this.name, required this.estimatedDistanceKm});
 }
 
-enum OrderStatus {
-  received,
-  preparing,
-  ready,
-  delivering,
-  delivered,
-}
+enum OrderStatus { received, preparing, ready, delivering, delivered }
 
 extension OrderStatusUi on OrderStatus {
   String get label {
@@ -245,8 +252,8 @@ class YafikaOrder {
 
   final PaymentMethod paymentMethod;
 
-  /// MVP: referência/código fornecido pelo cliente depois de efectuar o
-  /// pagamento manual ao parceiro. Não substitui confirmação por API.
+  /// MVP: referência informada pelo cliente. Não confirma o recebimento;
+  /// a Yafika regista a confirmação separadamente.
   final String paymentReference;
 
   /// Código escolhido pelo cliente no MVP e confirmado pelo motorista
@@ -256,9 +263,18 @@ class YafikaOrder {
   final String deliveryZone;
   final double distanceKm;
   final double deliveryFee;
+  final double partnerCommissionRate;
+  final double driverCommissionRate;
+  final double? paymentProviderFee;
 
   OrderStatus status;
-  DriverPayoutStatus driverPayoutStatus;
+  SettlementStatus driverPayoutStatus;
+  SettlementStatus partnerSettlementStatus;
+  PaymentCollectionStatus paymentCollectionStatus;
+  String? collectionConfirmationReference;
+  String? partnerSettlementReference;
+  String? driverPayoutReference;
+  final List<FinancialAuditEntry> financialHistory;
 
   final DateTime createdAt;
 
@@ -275,19 +291,44 @@ class YafikaOrder {
     required this.deliveryZone,
     required this.distanceKm,
     required this.deliveryFee,
+    required this.partnerCommissionRate,
+    required this.driverCommissionRate,
+    required this.paymentProviderFee,
     required this.status,
     required this.driverPayoutStatus,
+    required this.partnerSettlementStatus,
+    required this.paymentCollectionStatus,
+    this.collectionConfirmationReference,
+    this.partnerSettlementReference,
+    this.driverPayoutReference,
+    List<FinancialAuditEntry> financialHistory = const [],
     required this.createdAt,
-  });
+  }) : financialHistory = List<FinancialAuditEntry>.from(financialHistory);
 
   double get productsTotal {
-    return items.fold(
-      0,
-      (value, item) => value + item.subtotal,
-    );
+    return items.fold(0, (value, item) => value + item.subtotal);
   }
 
   double get grandTotal => productsTotal + deliveryFee;
+  double get partnerCommission =>
+      _roundCurrency(productsTotal * partnerCommissionRate);
+  double get driverCommission =>
+      _roundCurrency(deliveryFee * driverCommissionRate);
+  double get partnerNetAmount => productsTotal - partnerCommission;
+  double get driverNetAmount => deliveryFee - driverCommission;
+  double get yafikaCommissionRevenue => partnerCommission + driverCommission;
+  double? get yafikaNetRevenue => paymentProviderFee == null
+      ? null
+      : yafikaCommissionRevenue - paymentProviderFee!;
+}
+
+double _roundCurrency(double value) => (value * 100).roundToDouble() / 100;
+
+String _formatMt(double value) {
+  final formatted = value.toStringAsFixed(2);
+  return formatted.endsWith('.00')
+      ? formatted.substring(0, formatted.length - 3)
+      : formatted;
 }
 
 // ============================================================
@@ -296,6 +337,8 @@ class YafikaOrder {
 
 class AppStore extends ChangeNotifier {
   AppUser? currentUser;
+  double partnerCommissionRate = 0.05;
+  double driverCommissionRate = 0.10;
 
   final List<AppUser> users = [
     const AppUser(
@@ -389,38 +432,11 @@ class AppStore extends ChangeNotifier {
     ),
   ];
 
-  final List<PartnerPaymentProfile> partnerPaymentProfiles = const [
-    PartnerPaymentProfile(
-      partnerName: 'Shoprite Beira',
-      merchantName: 'Shoprite Beira - DEMO',
-      mpesaNumber: '84 000 0000',
-      emolaNumber: '86 000 0000',
-    ),
-    PartnerPaymentProfile(
-      partnerName: 'Yafika Food',
-      merchantName: 'Yafika Food - DEMO',
-      mpesaNumber: '84 111 0000',
-      emolaNumber: '86 111 0000',
-    ),
-  ];
-
   final List<DeliveryZone> deliveryZones = const [
-    DeliveryZone(
-      name: 'Ponta-Gêa',
-      estimatedDistanceKm: 4.2,
-    ),
-    DeliveryZone(
-      name: 'Macuti',
-      estimatedDistanceKm: 6.0,
-    ),
-    DeliveryZone(
-      name: 'Munhava',
-      estimatedDistanceKm: 5.5,
-    ),
-    DeliveryZone(
-      name: 'Chingussura',
-      estimatedDistanceKm: 8.0,
-    ),
+    DeliveryZone(name: 'Ponta-Gêa', estimatedDistanceKm: 4.2),
+    DeliveryZone(name: 'Macuti', estimatedDistanceKm: 6.0),
+    DeliveryZone(name: 'Munhava', estimatedDistanceKm: 5.5),
+    DeliveryZone(name: 'Chingussura', estimatedDistanceKm: 8.0),
   ];
 
   final Map<int, int> _cart = {};
@@ -435,14 +451,8 @@ class AppStore extends ChangeNotifier {
         address: 'Chingussura, Beira',
         partnerName: 'Shoprite Beira',
         items: [
-          OrderLine(
-            product: products[0],
-            quantity: 2,
-          ),
-          OrderLine(
-            product: products[3],
-            quantity: 1,
-          ),
+          OrderLine(product: products[0], quantity: 2),
+          OrderLine(product: products[3], quantity: 1),
         ],
         paymentMethod: PaymentMethod.mpesa,
         paymentReference: 'DEMO-001',
@@ -450,11 +460,44 @@ class AppStore extends ChangeNotifier {
         deliveryZone: 'Chingussura',
         distanceKm: 8.0,
         deliveryFee: 170,
+        partnerCommissionRate: partnerCommissionRate,
+        driverCommissionRate: driverCommissionRate,
+        paymentProviderFee: null,
         status: OrderStatus.ready,
-        driverPayoutStatus: DriverPayoutStatus.pending,
+        driverPayoutStatus: SettlementStatus.pending,
+        partnerSettlementStatus: SettlementStatus.pending,
+        paymentCollectionStatus: PaymentCollectionStatus.received,
+        collectionConfirmationReference: 'YAFIKA-DEMO-RECEBIDO-001',
+        financialHistory: [
+          FinancialAuditEntry(
+            action: 'Recebimento confirmado (demo)',
+            reference: 'YAFIKA-DEMO-RECEBIDO-001',
+            actor: 'Admin Yafika (demo)',
+            recordedAt: DateTime.now(),
+          ),
+        ],
         createdAt: DateTime.now(),
       ),
     );
+  }
+
+  bool configureCommissionRates({
+    required double partnerRate,
+    required double driverRate,
+  }) {
+    if (!partnerRate.isFinite ||
+        !driverRate.isFinite ||
+        partnerRate < 0 ||
+        partnerRate >= 1 ||
+        driverRate < 0 ||
+        driverRate >= 1) {
+      return false;
+    }
+
+    partnerCommissionRate = partnerRate;
+    driverCommissionRate = driverRate;
+    notifyListeners();
+    return true;
   }
 
   bool login({
@@ -518,26 +561,16 @@ class AppStore extends ChangeNotifier {
   Map<int, int> get cart => Map.unmodifiable(_cart);
 
   int get cartCount {
-    return _cart.values.fold(
-      0,
-      (value, quantity) => value + quantity,
-    );
+    return _cart.values.fold(0, (value, quantity) => value + quantity);
   }
 
   List<OrderLine> get cartLines {
     final lines = <OrderLine>[];
 
     for (final entry in _cart.entries) {
-      final product = products.firstWhere(
-        (product) => product.id == entry.key,
-      );
+      final product = products.firstWhere((product) => product.id == entry.key);
 
-      lines.add(
-        OrderLine(
-          product: product,
-          quantity: entry.value,
-        ),
-      );
+      lines.add(OrderLine(product: product, quantity: entry.value));
     }
 
     return lines;
@@ -552,10 +585,7 @@ class AppStore extends ChangeNotifier {
   }
 
   double get cartProductsTotal {
-    return cartLines.fold(
-      0,
-      (value, item) => value + item.subtotal,
-    );
+    return cartLines.fold(0, (value, item) => value + item.subtotal);
   }
 
   bool addToCart(Product product) {
@@ -565,11 +595,7 @@ class AppStore extends ChangeNotifier {
       return false;
     }
 
-    _cart.update(
-      product.id,
-      (quantity) => quantity + 1,
-      ifAbsent: () => 1,
-    );
+    _cart.update(product.id, (quantity) => quantity + 1, ifAbsent: () => 1);
 
     notifyListeners();
     return true;
@@ -589,12 +615,6 @@ class AppStore extends ChangeNotifier {
     }
 
     notifyListeners();
-  }
-
-  PartnerPaymentProfile paymentProfileFor(String partnerName) {
-    return partnerPaymentProfiles.firstWhere(
-      (profile) => profile.partnerName == partnerName,
-    );
   }
 
   double calculateDeliveryFee(double distanceKm) {
@@ -636,8 +656,13 @@ class AppStore extends ChangeNotifier {
       deliveryZone: deliveryZone.name,
       distanceKm: distance,
       deliveryFee: deliveryFee,
+      partnerCommissionRate: partnerCommissionRate,
+      driverCommissionRate: driverCommissionRate,
+      paymentProviderFee: null,
       status: OrderStatus.received,
-      driverPayoutStatus: DriverPayoutStatus.pending,
+      driverPayoutStatus: SettlementStatus.pending,
+      partnerSettlementStatus: SettlementStatus.pending,
+      paymentCollectionStatus: PaymentCollectionStatus.awaitingConfirmation,
       createdAt: DateTime.now(),
     );
 
@@ -648,18 +673,13 @@ class AppStore extends ChangeNotifier {
     return order;
   }
 
-  void updateOrderStatus(
-    YafikaOrder order,
-    OrderStatus status,
-  ) {
+  void updateOrderStatus(YafikaOrder order, OrderStatus status) {
     order.status = status;
+    _refreshSettlementEligibility(order);
     notifyListeners();
   }
 
-  bool confirmDelivery({
-    required YafikaOrder order,
-    required String code,
-  }) {
+  bool confirmDelivery({required YafikaOrder order, required String code}) {
     if (order.status != OrderStatus.delivering) {
       return false;
     }
@@ -669,10 +689,110 @@ class AppStore extends ChangeNotifier {
     }
 
     order.status = OrderStatus.delivered;
-    order.driverPayoutStatus = DriverPayoutStatus.paid;
+    _refreshSettlementEligibility(order);
     notifyListeners();
 
     return true;
+  }
+
+  bool confirmPaymentCollection({
+    required YafikaOrder order,
+    required String reference,
+  }) {
+    final cleanReference = reference.trim();
+    if (order.paymentCollectionStatus !=
+            PaymentCollectionStatus.awaitingConfirmation ||
+        cleanReference.isEmpty) {
+      return false;
+    }
+
+    order.paymentCollectionStatus = PaymentCollectionStatus.received;
+    order.collectionConfirmationReference = cleanReference;
+    order.financialHistory.add(
+      FinancialAuditEntry(
+        action: 'Recebimento confirmado manualmente (demo)',
+        reference: cleanReference,
+        actor: currentUser?.name ?? 'Admin Yafika (demo)',
+        recordedAt: DateTime.now(),
+      ),
+    );
+    _refreshSettlementEligibility(order);
+    notifyListeners();
+    return true;
+  }
+
+  bool registerPartnerSettlement({
+    required YafikaOrder order,
+    required String reference,
+  }) {
+    final cleanReference = reference.trim();
+    if (order.partnerSettlementStatus != SettlementStatus.eligible ||
+        cleanReference.isEmpty) {
+      return false;
+    }
+
+    order.partnerSettlementStatus = SettlementStatus.paid;
+    order.partnerSettlementReference = cleanReference;
+    _recordSettlement(
+      order,
+      'Liquidação do parceiro registada (demo)',
+      cleanReference,
+    );
+    notifyListeners();
+    return true;
+  }
+
+  bool registerDriverPayout({
+    required YafikaOrder order,
+    required String reference,
+  }) {
+    final cleanReference = reference.trim();
+    if (order.driverPayoutStatus != SettlementStatus.eligible ||
+        cleanReference.isEmpty) {
+      return false;
+    }
+
+    order.driverPayoutStatus = SettlementStatus.paid;
+    order.driverPayoutReference = cleanReference;
+    _recordSettlement(
+      order,
+      'Pagamento do motorista registado (demo)',
+      cleanReference,
+    );
+    notifyListeners();
+    return true;
+  }
+
+  void _refreshSettlementEligibility(YafikaOrder order) {
+    final eligible =
+        order.status == OrderStatus.delivered &&
+        order.paymentCollectionStatus == PaymentCollectionStatus.received;
+    if (eligible) {
+      if (order.partnerSettlementStatus == SettlementStatus.pending) {
+        order.partnerSettlementStatus = SettlementStatus.eligible;
+      }
+      if (order.driverPayoutStatus == SettlementStatus.pending) {
+        order.driverPayoutStatus = SettlementStatus.eligible;
+      }
+    } else {
+      if (order.partnerSettlementStatus == SettlementStatus.eligible) {
+        order.partnerSettlementStatus = SettlementStatus.pending;
+      }
+      if (order.driverPayoutStatus == SettlementStatus.eligible) {
+        order.driverPayoutStatus = SettlementStatus.pending;
+      }
+    }
+  }
+
+  void _recordSettlement(YafikaOrder order, String action, String reference) {
+    order.financialHistory.add(
+      FinancialAuditEntry(
+        action: action,
+        reference: reference,
+        actor: currentUser?.name ?? 'Admin Yafika (demo)',
+        recordedAt: DateTime.now(),
+      ),
+    );
   }
 
   int countByStatus(OrderStatus status) {
@@ -721,22 +841,15 @@ class _YafikaAppState extends State<YafikaApp> {
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(
-              color: YafikaColors.border,
-            ),
+            borderSide: const BorderSide(color: YafikaColors.border),
           ),
           focusedBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(14),
-            borderSide: const BorderSide(
-              color: YafikaColors.wine,
-              width: 1.5,
-            ),
+            borderSide: const BorderSide(color: YafikaColors.wine, width: 1.5),
           ),
         ),
       ),
-      home: AuthGate(
-        store: store,
-      ),
+      home: AuthGate(store: store),
     );
   }
 }
@@ -748,10 +861,7 @@ class _YafikaAppState extends State<YafikaApp> {
 class AuthGate extends StatelessWidget {
   final AppStore store;
 
-  const AuthGate({
-    super.key,
-    required this.store,
-  });
+  const AuthGate({super.key, required this.store});
 
   @override
   Widget build(BuildContext context) {
@@ -761,31 +871,18 @@ class AuthGate extends StatelessWidget {
         final user = store.currentUser;
 
         if (user == null) {
-          return LoginPage(
-            store: store,
-          );
+          return LoginPage(store: store);
         }
 
         switch (user.role) {
           case UserRole.customer:
-            return CustomerShell(
-              store: store,
-            );
+            return CustomerShell(store: store);
           case UserRole.partner:
-            return PartnerPage(
-              store: store,
-              rootMode: true,
-            );
+            return PartnerPage(store: store, rootMode: true);
           case UserRole.driver:
-            return DriverPage(
-              store: store,
-              rootMode: true,
-            );
+            return DriverPage(store: store, rootMode: true);
           case UserRole.admin:
-            return AdminPage(
-              store: store,
-              rootMode: true,
-            );
+            return AdminPage(store: store, rootMode: true);
         }
       },
     );
@@ -796,25 +893,67 @@ class AuthGate extends StatelessWidget {
 // LOGIN
 // ============================================================
 
+class YafikaBrandMark extends StatelessWidget {
+  final double height;
+
+  const YafikaBrandMark({super.key, required this.height});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: height,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: height * 0.58,
+            height: height * 0.58,
+            decoration: const BoxDecoration(
+              color: YafikaColors.wine,
+              shape: BoxShape.circle,
+            ),
+            child: Icon(
+              Icons.delivery_dining,
+              color: YafikaColors.white,
+              size: height * 0.39,
+            ),
+          ),
+          const SizedBox(height: 5),
+          const Text(
+            'YAFIKA',
+            style: TextStyle(
+              color: YafikaColors.wine,
+              fontSize: 20,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 2,
+            ),
+          ),
+          const Text(
+            'DELIVERY MARKET',
+            style: TextStyle(
+              color: YafikaColors.textMuted,
+              fontSize: 9,
+              letterSpacing: 2,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class LoginPage extends StatefulWidget {
   final AppStore store;
 
-  const LoginPage({
-    super.key,
-    required this.store,
-  });
+  const LoginPage({super.key, required this.store});
 
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final emailController = TextEditingController(
-    text: 'cliente@yafika.co.mz',
-  );
-  final passwordController = TextEditingController(
-    text: '123456',
-  );
+  final emailController = TextEditingController(text: 'cliente@yafika.co.mz');
+  final passwordController = TextEditingController(text: '123456');
 
   UserRole selectedRole = UserRole.customer;
   bool hidePassword = true;
@@ -867,23 +1006,14 @@ class _LoginPageState extends State<LoginPage> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(
-                maxWidth: 460,
-              ),
+              constraints: const BoxConstraints(maxWidth: 460),
               child: Column(
                 children: [
-                  Image.asset(
-                    'assets/images/yafika_logo.jpeg',
-                    height: 145,
-                    fit: BoxFit.contain,
-                  ),
+                  const YafikaBrandMark(height: 145),
                   const SizedBox(height: 18),
                   const Text(
                     'Bem-vindo à Yafika',
-                    style: TextStyle(
-                      fontSize: 25,
-                      fontWeight: FontWeight.w900,
-                    ),
+                    style: TextStyle(fontSize: 25, fontWeight: FontWeight.w900),
                   ),
                   const SizedBox(height: 5),
                   const Text(
@@ -898,9 +1028,7 @@ class _LoginPageState extends State<LoginPage> {
                     value: selectedRole,
                     decoration: const InputDecoration(
                       labelText: 'Entrar como',
-                      prefixIcon: Icon(
-                        Icons.switch_account_outlined,
-                      ),
+                      prefixIcon: Icon(Icons.switch_account_outlined),
                     ),
                     items: UserRole.values
                         .map(
@@ -922,9 +1050,7 @@ class _LoginPageState extends State<LoginPage> {
                     keyboardType: TextInputType.emailAddress,
                     decoration: const InputDecoration(
                       labelText: 'Email',
-                      prefixIcon: Icon(
-                        Icons.email_outlined,
-                      ),
+                      prefixIcon: Icon(Icons.email_outlined),
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -933,9 +1059,7 @@ class _LoginPageState extends State<LoginPage> {
                     obscureText: hidePassword,
                     decoration: InputDecoration(
                       labelText: 'Palavra-passe',
-                      prefixIcon: const Icon(
-                        Icons.lock_outline,
-                      ),
+                      prefixIcon: const Icon(Icons.lock_outline),
                       suffixIcon: IconButton(
                         onPressed: () {
                           setState(() {
@@ -971,9 +1095,7 @@ class _LoginPageState extends State<LoginPage> {
                       onPressed: submit,
                       child: const Text(
                         'ENTRAR',
-                        style: TextStyle(
-                          fontWeight: FontWeight.w900,
-                        ),
+                        style: TextStyle(fontWeight: FontWeight.w900),
                       ),
                     ),
                   ),
@@ -983,9 +1105,7 @@ class _LoginPageState extends State<LoginPage> {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) => RegisterPage(
-                            store: widget.store,
-                          ),
+                          builder: (_) => RegisterPage(store: widget.store),
                         ),
                       );
                     },
@@ -1035,10 +1155,7 @@ class _LoginPageState extends State<LoginPage> {
 class RegisterPage extends StatefulWidget {
   final AppStore store;
 
-  const RegisterPage({
-    super.key,
-    required this.store,
-  });
+  const RegisterPage({super.key, required this.store});
 
   @override
   State<RegisterPage> createState() => _RegisterPageState();
@@ -1060,7 +1177,8 @@ class _RegisterPageState extends State<RegisterPage> {
         phoneController.text.trim().isEmpty ||
         passwordController.text.length < 6) {
       setState(() {
-        error = 'Preencha todos os campos. A palavra-passe deve ter pelo menos 6 caracteres.';
+        error =
+            'Preencha todos os campos. A palavra-passe deve ter pelo menos 6 caracteres.';
       });
       return;
     }
@@ -1085,46 +1203,29 @@ class _RegisterPageState extends State<RegisterPage> {
 
   @override
   Widget build(BuildContext context) {
-    final allowedRoles = [
-      UserRole.customer,
-      UserRole.partner,
-      UserRole.driver,
-    ];
+    final allowedRoles = [UserRole.customer, UserRole.partner, UserRole.driver];
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Criar conta'),
-      ),
+      appBar: AppBar(title: const Text('Criar conta')),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(
-              maxWidth: 460,
-            ),
+            constraints: const BoxConstraints(maxWidth: 460),
             child: Column(
               children: [
-                Image.asset(
-                  'assets/images/yafika_logo.jpeg',
-                  height: 125,
-                  fit: BoxFit.contain,
-                ),
+                const YafikaBrandMark(height: 125),
                 const SizedBox(height: 18),
                 const Text(
                   'Junte-se à Yafika',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w900,
-                  ),
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
                 ),
                 const SizedBox(height: 22),
                 DropdownButtonFormField<UserRole>(
                   value: selectedRole,
                   decoration: const InputDecoration(
                     labelText: 'Tipo de conta',
-                    prefixIcon: Icon(
-                      Icons.badge_outlined,
-                    ),
+                    prefixIcon: Icon(Icons.badge_outlined),
                   ),
                   items: allowedRoles
                       .map(
@@ -1147,9 +1248,7 @@ class _RegisterPageState extends State<RegisterPage> {
                   controller: nameController,
                   decoration: const InputDecoration(
                     labelText: 'Nome / nome do estabelecimento',
-                    prefixIcon: Icon(
-                      Icons.person_outline,
-                    ),
+                    prefixIcon: Icon(Icons.person_outline),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1158,9 +1257,7 @@ class _RegisterPageState extends State<RegisterPage> {
                   keyboardType: TextInputType.emailAddress,
                   decoration: const InputDecoration(
                     labelText: 'Email',
-                    prefixIcon: Icon(
-                      Icons.email_outlined,
-                    ),
+                    prefixIcon: Icon(Icons.email_outlined),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1169,9 +1266,7 @@ class _RegisterPageState extends State<RegisterPage> {
                   keyboardType: TextInputType.phone,
                   decoration: const InputDecoration(
                     labelText: 'Telefone',
-                    prefixIcon: Icon(
-                      Icons.phone_outlined,
-                    ),
+                    prefixIcon: Icon(Icons.phone_outlined),
                   ),
                 ),
                 const SizedBox(height: 12),
@@ -1180,9 +1275,7 @@ class _RegisterPageState extends State<RegisterPage> {
                   obscureText: hidePassword,
                   decoration: InputDecoration(
                     labelText: 'Palavra-passe',
-                    prefixIcon: const Icon(
-                      Icons.lock_outline,
-                    ),
+                    prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       onPressed: () {
                         setState(() {
@@ -1218,9 +1311,7 @@ class _RegisterPageState extends State<RegisterPage> {
                     onPressed: submit,
                     child: const Text(
                       'CRIAR CONTA',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                      ),
+                      style: TextStyle(fontWeight: FontWeight.w900),
                     ),
                   ),
                 ),
@@ -1240,10 +1331,7 @@ class _RegisterPageState extends State<RegisterPage> {
 class CustomerShell extends StatefulWidget {
   final AppStore store;
 
-  const CustomerShell({
-    super.key,
-    required this.store,
-  });
+  const CustomerShell({super.key, required this.store});
 
   @override
   State<CustomerShell> createState() => _CustomerShellState();
@@ -1258,24 +1346,14 @@ class _CustomerShellState extends State<CustomerShell> {
       animation: widget.store,
       builder: (context, _) {
         final pages = [
-          HomeView(
-            store: widget.store,
-          ),
-          OrdersView(
-            store: widget.store,
-          ),
-          CartView(
-            store: widget.store,
-          ),
-          ProfileView(
-            store: widget.store,
-          ),
+          HomeView(store: widget.store),
+          OrdersView(store: widget.store),
+          CartView(store: widget.store),
+          ProfileView(store: widget.store),
         ];
 
         return Scaffold(
-          body: SafeArea(
-            child: pages[currentIndex],
-          ),
+          body: SafeArea(child: pages[currentIndex]),
           bottomNavigationBar: BottomNavigationBar(
             type: BottomNavigationBarType.fixed,
             selectedItemColor: YafikaColors.wine,
@@ -1298,13 +1376,9 @@ class _CustomerShellState extends State<CustomerShell> {
               ),
               BottomNavigationBarItem(
                 icon: Badge(
-                  label: Text(
-                    '${widget.store.cartCount}',
-                  ),
+                  label: Text('${widget.store.cartCount}'),
                   isLabelVisible: widget.store.cartCount > 0,
-                  child: const Icon(
-                    Icons.shopping_cart_outlined,
-                  ),
+                  child: const Icon(Icons.shopping_cart_outlined),
                 ),
                 label: 'Carrinho',
               ),
@@ -1327,10 +1401,7 @@ class _CustomerShellState extends State<CustomerShell> {
 class HomeView extends StatefulWidget {
   final AppStore store;
 
-  const HomeView({
-    super.key,
-    required this.store,
-  });
+  const HomeView({super.key, required this.store});
 
   @override
   State<HomeView> createState() => _HomeViewState();
@@ -1356,12 +1427,7 @@ class _HomeViewState extends State<HomeView> {
         SliverToBoxAdapter(
           child: Container(
             color: YafikaColors.wine,
-            padding: const EdgeInsets.fromLTRB(
-              20,
-              18,
-              20,
-              28,
-            ),
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1396,19 +1462,13 @@ class _HomeViewState extends State<HomeView> {
                       ],
                     ),
                     Spacer(),
-                    Icon(
-                      Icons.notifications_none,
-                      color: Colors.white,
-                    ),
+                    Icon(Icons.notifications_none, color: Colors.white),
                   ],
                 ),
                 const SizedBox(height: 28),
                 Text(
                   'Olá, ${user?.name ?? 'Cliente'} 👋',
-                  style: const TextStyle(
-                    color: Colors.white70,
-                    fontSize: 14,
-                  ),
+                  style: const TextStyle(color: Colors.white70, fontSize: 14),
                 ),
                 const SizedBox(height: 4),
                 const Text(
@@ -1439,153 +1499,138 @@ class _HomeViewState extends State<HomeView> {
         SliverPadding(
           padding: const EdgeInsets.all(18),
           sliver: SliverList(
-            delegate: SliverChildListDelegate(
-              [
-                const Text(
-                  'O que procura?',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
+            delegate: SliverChildListDelegate([
+              const Text(
+                'O que procura?',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+              ),
+              const SizedBox(height: 16),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  CategoryButton(
+                    icon: Icons.storefront_outlined,
+                    label: 'Supermercado',
                   ),
-                ),
-                const SizedBox(height: 16),
-                const Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    CategoryButton(
-                      icon: Icons.storefront_outlined,
-                      label: 'Supermercado',
-                    ),
-                    CategoryButton(
-                      icon: Icons.restaurant_outlined,
-                      label: 'Restaurantes',
-                    ),
-                    CategoryButton(
-                      icon: Icons.local_pharmacy_outlined,
-                      label: 'Farmácias',
-                    ),
-                    CategoryButton(
-                      icon: Icons.shopping_bag_outlined,
-                      label: 'Lojas',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 15),
-                const Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    CategoryButton(
-                      icon: Icons.flight_outlined,
-                      label: 'Aeroporto',
-                    ),
-                    CategoryButton(
-                      icon: Icons.local_shipping_outlined,
-                      label: 'Entregas',
-                    ),
-                    CategoryButton(
-                      icon: Icons.business_outlined,
-                      label: 'Empresas',
-                    ),
-                    CategoryButton(
-                      icon: Icons.more_horiz,
-                      label: 'Mais',
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 25),
-                Container(
-                  padding: const EdgeInsets.all(18),
-                  decoration: BoxDecoration(
-                    color: YafikaColors.wine,
-                    borderRadius: BorderRadius.circular(18),
+                  CategoryButton(
+                    icon: Icons.restaurant_outlined,
+                    label: 'Restaurantes',
                   ),
-                  child: const Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'OFERTAS ESPECIAIS',
-                              style: TextStyle(
-                                color: Colors.white70,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            SizedBox(height: 6),
-                            Text(
-                              'Descontos até 30%',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 20,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            SizedBox(height: 4),
-                            Text(
-                              'Nas lojas selecionadas',
-                              style: TextStyle(
-                                color: Colors.white70,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      Icon(
-                        Icons.shopping_basket_outlined,
-                        color: Colors.white,
-                        size: 55,
-                      ),
-                    ],
+                  CategoryButton(
+                    icon: Icons.local_pharmacy_outlined,
+                    label: 'Farmácias',
                   ),
+                  CategoryButton(
+                    icon: Icons.shopping_bag_outlined,
+                    label: 'Lojas',
+                  ),
+                ],
+              ),
+              const SizedBox(height: 15),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  CategoryButton(
+                    icon: Icons.flight_outlined,
+                    label: 'Aeroporto',
+                  ),
+                  CategoryButton(
+                    icon: Icons.local_shipping_outlined,
+                    label: 'Entregas',
+                  ),
+                  CategoryButton(
+                    icon: Icons.business_outlined,
+                    label: 'Empresas',
+                  ),
+                  CategoryButton(icon: Icons.more_horiz, label: 'Mais'),
+                ],
+              ),
+              const SizedBox(height: 25),
+              Container(
+                padding: const EdgeInsets.all(18),
+                decoration: BoxDecoration(
+                  color: YafikaColors.wine,
+                  borderRadius: BorderRadius.circular(18),
                 ),
-                const SizedBox(height: 28),
-                const Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                child: const Row(
                   children: [
-                    Text(
-                      'Produtos populares',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    Text(
-                      'Ver todos',
-                      style: TextStyle(
-                        color: YafikaColors.wine,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                ...filteredProducts.map(
-                  (product) => ProductCard(
-                    product: product,
-                    onAdd: () {
-                      final added = widget.store.addToCart(product);
-
-                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(
-                            added
-                                ? '${product.name} adicionado ao carrinho.'
-                                : 'Neste MVP, cada pedido deve pertencer a um único parceiro. Finalize o carrinho actual primeiro.',
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'OFERTAS ESPECIAIS',
+                            style: TextStyle(
+                              color: Colors.white70,
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                          duration: const Duration(
-                            milliseconds: 1500,
+                          SizedBox(height: 6),
+                          Text(
+                            'Descontos até 30%',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 20,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
-                        ),
-                      );
-                    },
-                  ),
+                          SizedBox(height: 4),
+                          Text(
+                            'Nas lojas selecionadas',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      Icons.shopping_basket_outlined,
+                      color: Colors.white,
+                      size: 55,
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(height: 28),
+              const Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'Produtos populares',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                  Text(
+                    'Ver todos',
+                    style: TextStyle(
+                      color: YafikaColors.wine,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              ...filteredProducts.map(
+                (product) => ProductCard(
+                  product: product,
+                  onAdd: () {
+                    final added = widget.store.addToCart(product);
+
+                    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          added
+                              ? '${product.name} adicionado ao carrinho.'
+                              : 'Neste MVP, cada pedido deve pertencer a um único parceiro. Finalize o carrinho actual primeiro.',
+                        ),
+                        duration: const Duration(milliseconds: 1500),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ]),
           ),
         ),
       ],
@@ -1597,11 +1642,7 @@ class CategoryButton extends StatelessWidget {
   final IconData icon;
   final String label;
 
-  const CategoryButton({
-    super.key,
-    required this.icon,
-    required this.label,
-  });
+  const CategoryButton({super.key, required this.icon, required this.label});
 
   @override
   Widget build(BuildContext context) {
@@ -1615,23 +1656,15 @@ class CategoryButton extends StatelessWidget {
             decoration: BoxDecoration(
               color: YafikaColors.white,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: YafikaColors.border,
-              ),
+              border: Border.all(color: YafikaColors.border),
             ),
-            child: Icon(
-              icon,
-              color: YafikaColors.wine,
-            ),
+            child: Icon(icon, color: YafikaColors.wine),
           ),
           const SizedBox(height: 7),
           Text(
             label,
             textAlign: TextAlign.center,
-            style: const TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-            ),
+            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -1643,25 +1676,17 @@ class ProductCard extends StatelessWidget {
   final Product product;
   final VoidCallback onAdd;
 
-  const ProductCard({
-    super.key,
-    required this.product,
-    required this.onAdd,
-  });
+  const ProductCard({super.key, required this.product, required this.onAdd});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(
-        bottom: 12,
-      ),
+      margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         color: YafikaColors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: YafikaColors.border,
-        ),
+        border: Border.all(color: YafikaColors.border),
       ),
       child: Row(
         children: [
@@ -1672,11 +1697,7 @@ class ProductCard extends StatelessWidget {
               color: YafikaColors.wineSoft,
               borderRadius: BorderRadius.circular(14),
             ),
-            child: Icon(
-              product.icon,
-              color: YafikaColors.wine,
-              size: 34,
-            ),
+            child: Icon(product.icon, color: YafikaColors.wine, size: 34),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -1721,9 +1742,7 @@ class ProductCard extends StatelessWidget {
               backgroundColor: YafikaColors.wine,
               foregroundColor: Colors.white,
             ),
-            icon: const Icon(
-              Icons.add,
-            ),
+            icon: const Icon(Icons.add),
           ),
         ],
       ),
@@ -1738,10 +1757,7 @@ class ProductCard extends StatelessWidget {
 class CartView extends StatelessWidget {
   final AppStore store;
 
-  const CartView({
-    super.key,
-    required this.store,
-  });
+  const CartView({super.key, required this.store});
 
   @override
   Widget build(BuildContext context) {
@@ -1799,11 +1815,7 @@ class CartView extends StatelessWidget {
               ),
               child: Row(
                 children: [
-                  Icon(
-                    line.product.icon,
-                    color: YafikaColors.wine,
-                    size: 36,
-                  ),
+                  Icon(line.product.icon, color: YafikaColors.wine, size: 36),
                   const SizedBox(width: 14),
                   Expanded(
                     child: Column(
@@ -1811,9 +1823,7 @@ class CartView extends StatelessWidget {
                       children: [
                         Text(
                           line.product.name,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                          ),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
                         ),
                         Text(
                           '${line.product.price.toStringAsFixed(0)} MT',
@@ -1827,25 +1837,17 @@ class CartView extends StatelessWidget {
                   ),
                   IconButton(
                     onPressed: () {
-                      store.removeFromCart(
-                        line.product,
-                      );
+                      store.removeFromCart(line.product);
                     },
-                    icon: const Icon(
-                      Icons.remove_circle_outline,
-                    ),
+                    icon: const Icon(Icons.remove_circle_outline),
                   ),
                   Text(
                     '${line.quantity}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                    ),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                   IconButton(
                     onPressed: () {
-                      store.addToCart(
-                        line.product,
-                      );
+                      store.addToCart(line.product);
                     },
                     icon: const Icon(
                       Icons.add_circle,
@@ -1857,10 +1859,7 @@ class CartView extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          PriceLine(
-            label: 'Produtos',
-            value: store.cartProductsTotal,
-          ),
+          PriceLine(label: 'Produtos', value: store.cartProductsTotal),
           const Divider(height: 30),
           PriceLine(
             label: 'Subtotal dos produtos',
@@ -1870,33 +1869,22 @@ class CartView extends StatelessWidget {
           const SizedBox(height: 12),
           const Text(
             'O valor de entrega será calculado no checkout conforme a zona/distância.',
-            style: TextStyle(
-              color: YafikaColors.textMuted,
-              height: 1.4,
-            ),
+            style: TextStyle(color: YafikaColors.textMuted, height: 1.4),
           ),
           const SizedBox(height: 25),
           SizedBox(
             height: 54,
             child: FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: YafikaColors.wine,
-              ),
+              style: FilledButton.styleFrom(backgroundColor: YafikaColors.wine),
               onPressed: () {
                 Navigator.push(
                   context,
-                  MaterialPageRoute(
-                    builder: (_) => CheckoutPage(
-                      store: store,
-                    ),
-                  ),
+                  MaterialPageRoute(builder: (_) => CheckoutPage(store: store)),
                 );
               },
               child: const Text(
                 'CONTINUAR PARA PAGAMENTO',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                ),
+                style: TextStyle(fontWeight: FontWeight.bold),
               ),
             ),
           ),
@@ -1921,29 +1909,27 @@ class PriceLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(
-        vertical: 5,
-      ),
+      padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: strong ? 18 : 14,
-              fontWeight:
-                  strong ? FontWeight.w800 : FontWeight.normal,
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: strong ? 18 : 14,
+                fontWeight: strong ? FontWeight.w800 : FontWeight.normal,
+              ),
             ),
           ),
+          const SizedBox(width: 12),
           Text(
-            '${value.toStringAsFixed(0)} MT',
+            '${_formatMt(value)} MT',
+            textAlign: TextAlign.right,
             style: TextStyle(
               fontSize: strong ? 19 : 14,
-              color: strong
-                  ? YafikaColors.wine
-                  : YafikaColors.text,
-              fontWeight:
-                  strong ? FontWeight.w900 : FontWeight.w600,
+              color: strong ? YafikaColors.wine : YafikaColors.text,
+              fontWeight: strong ? FontWeight.w900 : FontWeight.w600,
             ),
           ),
         ],
@@ -1959,10 +1945,7 @@ class PriceLine extends StatelessWidget {
 class CheckoutPage extends StatefulWidget {
   final AppStore store;
 
-  const CheckoutPage({
-    super.key,
-    required this.store,
-  });
+  const CheckoutPage({super.key, required this.store});
 
   @override
   State<CheckoutPage> createState() => _CheckoutPageState();
@@ -1972,9 +1955,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
   late final TextEditingController nameController;
   late final TextEditingController phoneController;
 
-  final addressController = TextEditingController(
-    text: 'Ponta-Gêa, Beira',
-  );
+  final addressController = TextEditingController(text: 'Ponta-Gêa, Beira');
 
   final paymentReferenceController = TextEditingController();
   final deliveryCodeController = TextEditingController();
@@ -1990,13 +1971,9 @@ class _CheckoutPageState extends State<CheckoutPage> {
 
     final user = widget.store.currentUser;
 
-    nameController = TextEditingController(
-      text: user?.name ?? '',
-    );
+    nameController = TextEditingController(text: user?.name ?? '');
 
-    phoneController = TextEditingController(
-      text: user?.phone ?? '',
-    );
+    phoneController = TextEditingController(text: user?.phone ?? '');
 
     selectedZone = widget.store.deliveryZones.first;
   }
@@ -2015,36 +1992,24 @@ class _CheckoutPageState extends State<CheckoutPage> {
   Widget build(BuildContext context) {
     final partnerName = widget.store.currentCartPartner!;
 
-    final paymentProfile =
-        widget.store.paymentProfileFor(partnerName);
-
     final deliveryFee = widget.store.calculateDeliveryFee(
       selectedZone.estimatedDistanceKm,
     );
 
-    final grandTotal =
-        widget.store.cartProductsTotal + deliveryFee;
+    final grandTotal = widget.store.cartProductsTotal + deliveryFee;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Checkout',
-        ),
-      ),
+      appBar: AppBar(title: const Text('Checkout')),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const SectionTitle(
-            title: '1. Dados da entrega',
-          ),
+          const SectionTitle(title: '1. Dados da entrega'),
           const SizedBox(height: 14),
           TextField(
             controller: nameController,
             decoration: const InputDecoration(
               labelText: 'Nome',
-              prefixIcon: Icon(
-                Icons.person_outline,
-              ),
+              prefixIcon: Icon(Icons.person_outline),
             ),
           ),
           const SizedBox(height: 12),
@@ -2053,9 +2018,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
             keyboardType: TextInputType.phone,
             decoration: const InputDecoration(
               labelText: 'Telefone',
-              prefixIcon: Icon(
-                Icons.phone_outlined,
-              ),
+              prefixIcon: Icon(Icons.phone_outlined),
             ),
           ),
           const SizedBox(height: 12),
@@ -2063,9 +2026,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
             controller: addressController,
             decoration: const InputDecoration(
               labelText: 'Endereço de entrega',
-              prefixIcon: Icon(
-                Icons.location_on_outlined,
-              ),
+              prefixIcon: Icon(Icons.location_on_outlined),
             ),
           ),
           const SizedBox(height: 12),
@@ -2073,9 +2034,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
             value: selectedZone,
             decoration: const InputDecoration(
               labelText: 'Zona de entrega',
-              prefixIcon: Icon(
-                Icons.map_outlined,
-              ),
+              prefixIcon: Icon(Icons.map_outlined),
             ),
             items: widget.store.deliveryZones
                 .map(
@@ -2101,17 +2060,13 @@ class _CheckoutPageState extends State<CheckoutPage> {
             fee: deliveryFee,
           ),
           const SizedBox(height: 28),
-          const SectionTitle(
-            title: '2. Pagamento dos produtos',
-          ),
+          const SectionTitle(title: '2. Pagamento centralizado pela Yafika'),
           const SizedBox(height: 14),
           DropdownButtonFormField<PaymentMethod>(
             value: selectedPaymentMethod,
             decoration: const InputDecoration(
               labelText: 'Método de pagamento',
-              prefixIcon: Icon(
-                Icons.account_balance_wallet_outlined,
-              ),
+              prefixIcon: Icon(Icons.account_balance_wallet_outlined),
             ),
             items: PaymentMethod.values
                 .map(
@@ -2119,11 +2074,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
                     value: method,
                     child: Row(
                       children: [
-                        Icon(
-                          method.icon,
-                          size: 20,
-                          color: YafikaColors.wine,
-                        ),
+                        Icon(method.icon, size: 20, color: YafikaColors.wine),
                         const SizedBox(width: 10),
                         Text(method.label),
                       ],
@@ -2141,35 +2092,29 @@ class _CheckoutPageState extends State<CheckoutPage> {
           ),
           const SizedBox(height: 12),
           PartnerPaymentCard(
-            profile: paymentProfile,
+            partnerName: partnerName,
             method: selectedPaymentMethod,
             productsTotal: widget.store.cartProductsTotal,
+            deliveryFee: deliveryFee,
+            partnerCommissionRate: widget.store.partnerCommissionRate,
+            driverCommissionRate: widget.store.driverCommissionRate,
           ),
           const SizedBox(height: 12),
           TextField(
             controller: paymentReferenceController,
             decoration: InputDecoration(
-              labelText: selectedPaymentMethod == PaymentMethod.card
-                  ? 'Referência do pagamento (demo)'
-                  : 'Código / referência da transacção',
-              prefixIcon: const Icon(
-                Icons.confirmation_number_outlined,
-              ),
+              labelText: 'Referência / comprovativo (demo)',
+              prefixIcon: const Icon(Icons.confirmation_number_outlined),
               helperText:
-                  'MVP: o pagamento é registado pela referência. A confirmação automática entra quando integrarmos a API do provedor.',
+                  'A referência não confirma o pagamento. Na demonstração, a administração regista a confirmação manualmente.',
             ),
           ),
           const SizedBox(height: 28),
-          const SectionTitle(
-            title: '3. Código de entrega',
-          ),
+          const SectionTitle(title: '3. Código de entrega'),
           const SizedBox(height: 10),
           const Text(
-            'Escolha um código de 4 dígitos. O motorista terá de introduzir este código ao concluir a entrega. Só depois disso a entrega será marcada como concluída e o pagamento do motorista será libertado no MVP.',
-            style: TextStyle(
-              color: YafikaColors.textMuted,
-              height: 1.5,
-            ),
+            'Escolha um código de 4 dígitos. O motorista terá de introduzir este código ao concluir a entrega. A comissão da Yafika e os valores líquidos a liquidar ficam registados no dashboard.',
+            style: TextStyle(color: YafikaColors.textMuted, height: 1.5),
           ),
           const SizedBox(height: 12),
           TextField(
@@ -2179,9 +2124,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
             obscureText: true,
             decoration: const InputDecoration(
               labelText: 'Código de entrega',
-              prefixIcon: Icon(
-                Icons.pin_outlined,
-              ),
+              prefixIcon: Icon(Icons.pin_outlined),
               counterText: '',
             ),
           ),
@@ -2191,9 +2134,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(18),
-              border: Border.all(
-                color: YafikaColors.border,
-              ),
+              border: Border.all(color: YafikaColors.border),
             ),
             child: Column(
               children: [
@@ -2201,16 +2142,9 @@ class _CheckoutPageState extends State<CheckoutPage> {
                   label: 'Produtos → Parceiro',
                   value: widget.store.cartProductsTotal,
                 ),
-                PriceLine(
-                  label: 'Entrega → Motorista',
-                  value: deliveryFee,
-                ),
+                PriceLine(label: 'Entrega → Motorista', value: deliveryFee),
                 const Divider(height: 28),
-                PriceLine(
-                  label: 'Total',
-                  value: grandTotal,
-                  strong: true,
-                ),
+                PriceLine(label: 'Total', value: grandTotal, strong: true),
               ],
             ),
           ),
@@ -2228,12 +2162,9 @@ class _CheckoutPageState extends State<CheckoutPage> {
           SizedBox(
             height: 56,
             child: FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor: YafikaColors.wine,
-              ),
+              style: FilledButton.styleFrom(backgroundColor: YafikaColors.wine),
               onPressed: () {
-                final deliveryCode =
-                    deliveryCodeController.text.trim();
+                final deliveryCode = deliveryCodeController.text.trim();
 
                 if (nameController.text.trim().isEmpty ||
                     phoneController.text.trim().isEmpty ||
@@ -2254,7 +2185,8 @@ class _CheckoutPageState extends State<CheckoutPage> {
                 if (deliveryCode.length != 4 ||
                     int.tryParse(deliveryCode) == null) {
                   setState(() {
-                    error = 'O código de entrega deve ter exactamente 4 dígitos.';
+                    error =
+                        'O código de entrega deve ter exactamente 4 dígitos.';
                   });
                   return;
                 }
@@ -2264,8 +2196,7 @@ class _CheckoutPageState extends State<CheckoutPage> {
                   phone: phoneController.text.trim(),
                   address: addressController.text.trim(),
                   paymentMethod: selectedPaymentMethod,
-                  paymentReference:
-                      paymentReferenceController.text.trim(),
+                  paymentReference: paymentReferenceController.text.trim(),
                   deliveryCode: deliveryCode,
                   deliveryZone: selectedZone,
                 );
@@ -2273,23 +2204,19 @@ class _CheckoutPageState extends State<CheckoutPage> {
                 Navigator.pushReplacement(
                   context,
                   MaterialPageRoute(
-                    builder: (_) => OrderSuccessPage(
-                      order: order,
-                    ),
+                    builder: (_) => OrderSuccessPage(order: order),
                   ),
                 );
               },
               child: const Text(
                 'CONFIRMAR PEDIDO',
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                ),
+                style: TextStyle(fontWeight: FontWeight.w900),
               ),
             ),
           ),
           const SizedBox(height: 15),
           const Text(
-            'Nota do MVP: M-Pesa/e-Mola/cartão ainda estão simulados. Não introduza PIN, OTP ou dados reais de cartão nesta versão.',
+            'Nota do MVP: M-Pesa/e-Mola/cartão são apenas opções demonstrativas. Nenhum pagamento ou transferência real é processado. Não introduza PIN, OTP ou dados reais de cartão.',
             textAlign: TextAlign.center,
             style: TextStyle(
               color: YafikaColors.textMuted,
@@ -2306,19 +2233,13 @@ class _CheckoutPageState extends State<CheckoutPage> {
 class SectionTitle extends StatelessWidget {
   final String title;
 
-  const SectionTitle({
-    super.key,
-    required this.title,
-  });
+  const SectionTitle({super.key, required this.title});
 
   @override
   Widget build(BuildContext context) {
     return Text(
       title,
-      style: const TextStyle(
-        fontSize: 19,
-        fontWeight: FontWeight.w900,
-      ),
+      style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w900),
     );
   }
 }
@@ -2346,9 +2267,7 @@ class DeliveryFeeCard extends StatelessWidget {
           const CircleAvatar(
             backgroundColor: YafikaColors.wine,
             foregroundColor: Colors.white,
-            child: Icon(
-              Icons.delivery_dining,
-            ),
+            child: Icon(Icons.delivery_dining),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -2357,9 +2276,7 @@ class DeliveryFeeCard extends StatelessWidget {
               children: [
                 const Text(
                   'Entrega calculada',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w900,
-                  ),
+                  style: TextStyle(fontWeight: FontWeight.w900),
                 ),
                 Text(
                   '${distanceKm.toStringAsFixed(1)} km • valor estimado',
@@ -2386,86 +2303,106 @@ class DeliveryFeeCard extends StatelessWidget {
 }
 
 class PartnerPaymentCard extends StatelessWidget {
-  final PartnerPaymentProfile profile;
+  final String partnerName;
   final PaymentMethod method;
   final double productsTotal;
+  final double deliveryFee;
+  final double partnerCommissionRate;
+  final double driverCommissionRate;
 
   const PartnerPaymentCard({
     super.key,
-    required this.profile,
+    required this.partnerName,
     required this.method,
     required this.productsTotal,
+    required this.deliveryFee,
+    required this.partnerCommissionRate,
+    required this.driverCommissionRate,
   });
 
   @override
   Widget build(BuildContext context) {
-    String instruction;
-
-    switch (method) {
-      case PaymentMethod.mpesa:
-        instruction = 'M-Pesa: ${profile.mpesaNumber}';
-        break;
-      case PaymentMethod.emola:
-        instruction = 'e-Mola: ${profile.emolaNumber}';
-        break;
-      case PaymentMethod.card:
-        instruction =
-            'Cartão: pagamento seguro via gateway será integrado na próxima fase.';
-        break;
-    }
+    final partnerCommission = _roundCurrency(
+      productsTotal * partnerCommissionRate,
+    );
+    final driverCommission = _roundCurrency(deliveryFee * driverCommissionRate);
+    final yafikaCommission = partnerCommission + driverCommission;
 
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: YafikaColors.wine,
-        ),
+        border: Border.all(color: YafikaColors.wine),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
-            'Dados do parceiro',
+            'RECEBIMENTO CENTRALIZADO • DEMO',
             style: TextStyle(
-              color: YafikaColors.textMuted,
+              color: YafikaColors.wine,
               fontSize: 11,
               fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 6),
-          Text(
-            profile.merchantName,
-            style: const TextStyle(
-              fontSize: 16,
-              fontWeight: FontWeight.w900,
-            ),
+          const Text(
+            'Yafika Delivery',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
           ),
           const SizedBox(height: 10),
           Row(
             children: [
-              Icon(
-                method.icon,
-                color: YafikaColors.wine,
-              ),
+              Icon(method.icon, color: YafikaColors.wine),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  instruction,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w700,
-                  ),
+                  '${method.label} seleccionado. Integração não activa; nenhum pagamento real será cobrado.',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 10),
-          Text(
-            'Valor dos produtos: ${productsTotal.toStringAsFixed(0)} MT',
-            style: const TextStyle(
-              color: YafikaColors.wine,
-              fontWeight: FontWeight.w900,
+          Text('Parceiro: $partnerName'),
+          const SizedBox(height: 8),
+          PriceLine(label: 'Produtos cobrados', value: productsTotal),
+          PriceLine(
+            label:
+                'Comissão Yafika (${partnerCommissionRate.percentageLabel}%)',
+            value: partnerCommission,
+          ),
+          PriceLine(
+            label: 'Líquido do parceiro',
+            value: productsTotal - partnerCommission,
+            strong: true,
+          ),
+          const Divider(height: 24),
+          PriceLine(label: 'Taxa de entrega', value: deliveryFee),
+          PriceLine(
+            label: 'Comissão Yafika (${driverCommissionRate.percentageLabel}%)',
+            value: driverCommission,
+          ),
+          PriceLine(
+            label: 'Líquido do motoboy',
+            value: deliveryFee - driverCommission,
+            strong: true,
+          ),
+          const Divider(height: 24),
+          PriceLine(
+            label: 'Receita bruta Yafika',
+            value: yafikaCommission,
+            strong: true,
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Tarifa do operador: por configurar e apresentada separadamente. '
+            'As comissões são propostas de demonstração; não são uma confirmação de pagamento.',
+            style: TextStyle(
+              color: YafikaColors.textMuted,
+              fontSize: 11,
+              height: 1.4,
             ),
           ),
         ],
@@ -2481,10 +2418,7 @@ class PartnerPaymentCard extends StatelessWidget {
 class OrderSuccessPage extends StatelessWidget {
   final YafikaOrder order;
 
-  const OrderSuccessPage({
-    super.key,
-    required this.order,
-  });
+  const OrderSuccessPage({super.key, required this.order});
 
   @override
   Widget build(BuildContext context) {
@@ -2502,25 +2436,19 @@ class OrderSuccessPage extends StatelessWidget {
                   color: YafikaColors.wine,
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(
-                  Icons.check,
-                  color: Colors.white,
-                  size: 62,
-                ),
+                child: const Icon(Icons.check, color: Colors.white, size: 62),
               ),
               const SizedBox(height: 28),
               const Text(
                 'Pedido realizado!',
-                style: TextStyle(
-                  fontSize: 25,
-                  fontWeight: FontWeight.w900,
-                ),
+                style: TextStyle(fontSize: 25, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 10),
               Text(
                 '${order.id}\n'
-                'Pagamento dos produtos registado via ${order.paymentMethod.label}.\n'
-                'Entrega: ${order.deliveryFee.toStringAsFixed(0)} MT.',
+                'Referência ${order.paymentReference} registada via ${order.paymentMethod.label}; '
+                'o recebimento aguarda confirmação da Yafika.\n'
+                'Comissão estimada Yafika: ${order.yafikaCommissionRevenue.toStringAsFixed(2)} MT.',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: YafikaColors.textMuted,
@@ -2577,9 +2505,7 @@ class OrderSuccessPage extends StatelessWidget {
                   onPressed: () {
                     Navigator.pop(context);
                   },
-                  child: const Text(
-                    'CONTINUAR',
-                  ),
+                  child: const Text('CONTINUAR'),
                 ),
               ),
             ],
@@ -2597,10 +2523,7 @@ class OrderSuccessPage extends StatelessWidget {
 class OrdersView extends StatelessWidget {
   final AppStore store;
 
-  const OrdersView({
-    super.key,
-    required this.store,
-  });
+  const OrdersView({super.key, required this.store});
 
   @override
   Widget build(BuildContext context) {
@@ -2623,9 +2546,7 @@ class OrdersView extends StatelessWidget {
         itemBuilder: (_, index) {
           final order = store.orders[index];
 
-          return OrderCard(
-            order: order,
-          );
+          return OrderCard(order: order);
         },
       ),
     );
@@ -2635,10 +2556,7 @@ class OrdersView extends StatelessWidget {
 class OrderCard extends StatelessWidget {
   final YafikaOrder order;
 
-  const OrderCard({
-    super.key,
-    required this.order,
-  });
+  const OrderCard({super.key, required this.order});
 
   @override
   Widget build(BuildContext context) {
@@ -2648,9 +2566,7 @@ class OrderCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(
-          color: YafikaColors.border,
-        ),
+        border: Border.all(color: YafikaColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2677,23 +2593,16 @@ class OrderCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(
             order.partnerName,
-            style: const TextStyle(
-              color: YafikaColors.textMuted,
-            ),
+            style: const TextStyle(color: YafikaColors.textMuted),
           ),
           const SizedBox(height: 12),
           Row(
             children: [
-              Icon(
-                order.status.icon,
-                color: YafikaColors.wine,
-              ),
+              Icon(order.status.icon, color: YafikaColors.wine),
               const SizedBox(width: 8),
               Text(
                 order.status.label,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                ),
+                style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ],
           ),
@@ -2702,15 +2611,10 @@ class OrderCard extends StatelessWidget {
             'Produtos: ${order.productsTotal.toStringAsFixed(0)} MT • '
             'Entrega: ${order.deliveryFee.toStringAsFixed(0)} MT • '
             '${order.distanceKm.toStringAsFixed(1)} km',
-            style: const TextStyle(
-              color: YafikaColors.textMuted,
-              fontSize: 11,
-            ),
+            style: const TextStyle(color: YafikaColors.textMuted, fontSize: 11),
           ),
           const SizedBox(height: 15),
-          OrderProgress(
-            status: order.status,
-          ),
+          OrderProgress(status: order.status),
         ],
       ),
     );
@@ -2720,35 +2624,25 @@ class OrderCard extends StatelessWidget {
 class OrderProgress extends StatelessWidget {
   final OrderStatus status;
 
-  const OrderProgress({
-    super.key,
-    required this.status,
-  });
+  const OrderProgress({super.key, required this.status});
 
   @override
   Widget build(BuildContext context) {
     return Row(
-      children: List.generate(
-        OrderStatus.values.length,
-        (index) {
-          final active = index <= status.index;
+      children: List.generate(OrderStatus.values.length, (index) {
+        final active = index <= status.index;
 
-          return Expanded(
-            child: Container(
-              margin: const EdgeInsets.symmetric(
-                horizontal: 2,
-              ),
-              height: 5,
-              decoration: BoxDecoration(
-                color: active
-                    ? YafikaColors.wine
-                    : YafikaColors.border,
-                borderRadius: BorderRadius.circular(10),
-              ),
+        return Expanded(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 2),
+            height: 5,
+            decoration: BoxDecoration(
+              color: active ? YafikaColors.wine : YafikaColors.border,
+              borderRadius: BorderRadius.circular(10),
             ),
-          );
-        },
-      ),
+          ),
+        );
+      }),
     );
   }
 }
@@ -2760,10 +2654,7 @@ class OrderProgress extends StatelessWidget {
 class ProfileView extends StatelessWidget {
   final AppStore store;
 
-  const ProfileView({
-    super.key,
-    required this.store,
-  });
+  const ProfileView({super.key, required this.store});
 
   @override
   Widget build(BuildContext context) {
@@ -2780,29 +2671,20 @@ class ProfileView extends StatelessWidget {
           const CircleAvatar(
             radius: 40,
             backgroundColor: YafikaColors.wine,
-            child: Icon(
-              Icons.person,
-              color: Colors.white,
-              size: 44,
-            ),
+            child: Icon(Icons.person, color: Colors.white, size: 44),
           ),
           const SizedBox(height: 12),
           Center(
             child: Text(
               user?.name ?? '',
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
-              ),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
             ),
           ),
           const SizedBox(height: 5),
           Center(
             child: Text(
               user?.email ?? '',
-              style: const TextStyle(
-                color: YafikaColors.textMuted,
-              ),
+              style: const TextStyle(color: YafikaColors.textMuted),
             ),
           ),
           const SizedBox(height: 30),
@@ -2811,16 +2693,11 @@ class ProfileView extends StatelessWidget {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(15),
             ),
-            leading: const Icon(
-              Icons.badge_outlined,
-              color: YafikaColors.wine,
-            ),
+            leading: const Icon(Icons.badge_outlined, color: YafikaColors.wine),
             title: const Text('Tipo de conta'),
             trailing: Text(
               user?.role.label ?? '',
-              style: const TextStyle(
-                fontWeight: FontWeight.w800,
-              ),
+              style: const TextStyle(fontWeight: FontWeight.w800),
             ),
           ),
           const SizedBox(height: 25),
@@ -2829,19 +2706,13 @@ class ProfileView extends StatelessWidget {
             child: OutlinedButton.icon(
               style: OutlinedButton.styleFrom(
                 foregroundColor: YafikaColors.wine,
-                side: const BorderSide(
-                  color: YafikaColors.wine,
-                ),
+                side: const BorderSide(color: YafikaColors.wine),
               ),
               onPressed: store.logout,
-              icon: const Icon(
-                Icons.logout,
-              ),
+              icon: const Icon(Icons.logout),
               label: const Text(
                 'TERMINAR SESSÃO',
-                style: TextStyle(
-                  fontWeight: FontWeight.w900,
-                ),
+                style: TextStyle(fontWeight: FontWeight.w900),
               ),
             ),
           ),
@@ -2859,11 +2730,7 @@ class PartnerPage extends StatelessWidget {
   final AppStore store;
   final bool rootMode;
 
-  const PartnerPage({
-    super.key,
-    required this.store,
-    this.rootMode = false,
-  });
+  const PartnerPage({super.key, required this.store, this.rootMode = false});
 
   @override
   Widget build(BuildContext context) {
@@ -2873,16 +2740,12 @@ class PartnerPage extends StatelessWidget {
         return Scaffold(
           appBar: AppBar(
             automaticallyImplyLeading: !rootMode,
-            title: const Text(
-              'Parceiro • Shoprite Beira',
-            ),
+            title: const Text('Parceiro • Shoprite Beira'),
             actions: [
               if (rootMode)
                 IconButton(
                   onPressed: store.logout,
-                  icon: const Icon(
-                    Icons.logout,
-                  ),
+                  icon: const Icon(Icons.logout),
                 ),
             ],
           ),
@@ -2891,10 +2754,7 @@ class PartnerPage extends StatelessWidget {
             children: [
               const Text(
                 'Pedidos',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w900,
-                ),
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 18),
               ...store.orders
@@ -2907,22 +2767,31 @@ class PartnerPage extends StatelessWidget {
                   .map(
                     (order) => OperationalOrderCard(
                       order: order,
-                      buttonLabel:
-                          partnerButtonLabel(order.status),
-                      onPressed:
-                          partnerAction(store, order),
+                      buttonLabel: partnerButtonLabel(order),
+                      onPressed: partnerAction(store, order),
                       extra: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            'Pagamento produtos: ${order.paymentMethod.label}',
+                            'Recebimento Yafika: ${order.paymentCollectionStatus.label}',
                             style: const TextStyle(
                               color: YafikaColors.textMuted,
                               fontSize: 12,
                             ),
                           ),
                           Text(
-                            'Ref.: ${order.paymentReference}',
+                            'Valor líquido do parceiro: '
+                            '${order.partnerNetAmount.toStringAsFixed(2)} MT '
+                            '(comissão Yafika: '
+                            '${order.partnerCommission.toStringAsFixed(2)} MT)',
+                            style: const TextStyle(
+                              color: YafikaColors.wine,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 12,
+                            ),
+                          ),
+                          Text(
+                            'Ref. informada pelo cliente: ${order.paymentReference}',
                             style: const TextStyle(
                               fontWeight: FontWeight.w700,
                               fontSize: 12,
@@ -2939,9 +2808,12 @@ class PartnerPage extends StatelessWidget {
     );
   }
 
-  static String partnerButtonLabel(
-    OrderStatus status,
-  ) {
+  static String partnerButtonLabel(YafikaOrder order) {
+    if (order.paymentCollectionStatus != PaymentCollectionStatus.received) {
+      return 'AGUARDANDO CONFIRMAÇÃO DA YAFIKA';
+    }
+
+    final status = order.status;
     switch (status) {
       case OrderStatus.received:
         return 'ACEITAR PEDIDO';
@@ -2954,25 +2826,20 @@ class PartnerPage extends StatelessWidget {
     }
   }
 
-  static VoidCallback? partnerAction(
-    AppStore store,
-    YafikaOrder order,
-  ) {
+  static VoidCallback? partnerAction(AppStore store, YafikaOrder order) {
+    if (order.paymentCollectionStatus != PaymentCollectionStatus.received) {
+      return null;
+    }
+
     if (order.status == OrderStatus.received) {
       return () {
-        store.updateOrderStatus(
-          order,
-          OrderStatus.preparing,
-        );
+        store.updateOrderStatus(order, OrderStatus.preparing);
       };
     }
 
     if (order.status == OrderStatus.preparing) {
       return () {
-        store.updateOrderStatus(
-          order,
-          OrderStatus.ready,
-        );
+        store.updateOrderStatus(order, OrderStatus.ready);
       };
     }
 
@@ -2988,16 +2855,9 @@ class DriverPage extends StatelessWidget {
   final AppStore store;
   final bool rootMode;
 
-  const DriverPage({
-    super.key,
-    required this.store,
-    this.rootMode = false,
-  });
+  const DriverPage({super.key, required this.store, this.rootMode = false});
 
-  Future<void> askDeliveryCode(
-    BuildContext context,
-    YafikaOrder order,
-  ) async {
+  Future<void> askDeliveryCode(BuildContext context, YafikaOrder order) async {
     final controller = TextEditingController();
     String? localError;
 
@@ -3007,9 +2867,7 @@ class DriverPage extends StatelessWidget {
         return StatefulBuilder(
           builder: (context, setState) {
             return AlertDialog(
-              title: const Text(
-                'Confirmar entrega',
-              ),
+              title: const Text('Confirmar entrega'),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -3027,9 +2885,7 @@ class DriverPage extends StatelessWidget {
                     decoration: const InputDecoration(
                       labelText: 'Código de entrega',
                       counterText: '',
-                      prefixIcon: Icon(
-                        Icons.pin_outlined,
-                      ),
+                      prefixIcon: Icon(Icons.pin_outlined),
                     ),
                   ),
                   if (localError != null)
@@ -3071,14 +2927,14 @@ class DriverPage extends StatelessWidget {
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(
-                          'Entrega concluída. Pagamento do motorista: ${order.deliveryFee.toStringAsFixed(0)} MT.',
+                          'Entrega concluída. Valor líquido a liquidar: '
+                          '${order.driverNetAmount.toStringAsFixed(2)} MT. '
+                          'A Yafika reteve ${order.driverCommission.toStringAsFixed(2)} MT (demo).',
                         ),
                       ),
                     );
                   },
-                  child: const Text(
-                    'CONFIRMAR',
-                  ),
+                  child: const Text('CONFIRMAR'),
                 ),
               ],
             );
@@ -3097,8 +2953,9 @@ class DriverPage extends StatelessWidget {
       builder: (_, __) {
         final deliveries = store.orders.where(
           (order) =>
-              order.status == OrderStatus.ready ||
-              order.status == OrderStatus.delivering,
+              (order.status == OrderStatus.ready ||
+                  order.status == OrderStatus.delivering) &&
+              order.paymentCollectionStatus == PaymentCollectionStatus.received,
         );
 
         return Scaffold(
@@ -3111,18 +2968,14 @@ class DriverPage extends StatelessWidget {
                 child: Center(
                   child: Text(
                     '● Online',
-                    style: TextStyle(
-                      color: Colors.white,
-                    ),
+                    style: TextStyle(color: Colors.white),
                   ),
                 ),
               ),
               if (rootMode)
                 IconButton(
                   onPressed: store.logout,
-                  icon: const Icon(
-                    Icons.logout,
-                  ),
+                  icon: const Icon(Icons.logout),
                 ),
             ],
           ),
@@ -3131,18 +2984,14 @@ class DriverPage extends StatelessWidget {
             children: [
               const Text(
                 'Entregas',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w900,
-                ),
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 18),
               if (deliveries.isEmpty)
                 const EmptyView(
                   icon: Icons.delivery_dining,
                   title: 'Sem entregas',
-                  subtitle:
-                      'Novas solicitações aparecerão aqui.',
+                  subtitle: 'Novas solicitações aparecerão aqui.',
                 ),
               ...deliveries.map(
                 (order) => OperationalOrderCard(
@@ -3152,7 +3001,8 @@ class DriverPage extends StatelessWidget {
                     children: [
                       Text(
                         '${order.distanceKm.toStringAsFixed(1)} km • '
-                        '${order.deliveryFee.toStringAsFixed(0)} MT de entrega',
+                        '${order.driverNetAmount.toStringAsFixed(2)} MT líquidos '
+                        '(comissão Yafika: ${order.driverCommission.toStringAsFixed(2)} MT)',
                         style: const TextStyle(
                           color: YafikaColors.wine,
                           fontWeight: FontWeight.w900,
@@ -3162,8 +3012,8 @@ class DriverPage extends StatelessWidget {
                       Text(
                         'Pagamento motorista: ${order.driverPayoutStatus.label}',
                         style: TextStyle(
-                          color: order.driverPayoutStatus ==
-                                  DriverPayoutStatus.paid
+                          color:
+                              order.driverPayoutStatus == SettlementStatus.paid
                               ? YafikaColors.green
                               : YafikaColors.orange,
                           fontWeight: FontWeight.w800,
@@ -3172,21 +3022,14 @@ class DriverPage extends StatelessWidget {
                       ),
                     ],
                   ),
-                  buttonLabel:
-                      order.status == OrderStatus.ready
-                          ? 'ACEITAR ENTREGA'
-                          : 'CONFIRMAR COM CÓDIGO',
+                  buttonLabel: order.status == OrderStatus.ready
+                      ? 'ACEITAR ENTREGA'
+                      : 'CONFIRMAR COM CÓDIGO',
                   onPressed: () {
                     if (order.status == OrderStatus.ready) {
-                      store.updateOrderStatus(
-                        order,
-                        OrderStatus.delivering,
-                      );
+                      store.updateOrderStatus(order, OrderStatus.delivering);
                     } else {
-                      askDeliveryCode(
-                        context,
-                        order,
-                      );
+                      askDeliveryCode(context, order);
                     }
                   },
                 ),
@@ -3203,15 +3046,526 @@ class DriverPage extends StatelessWidget {
 // ADMIN
 // ============================================================
 
+Future<String?> _askForFinancialReference(
+  BuildContext context, {
+  required String title,
+  required String description,
+}) async {
+  final controller = TextEditingController();
+  final reference = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(title),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(description),
+          const SizedBox(height: 12),
+          TextField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Referência da operação',
+              prefixIcon: Icon(Icons.confirmation_number_outlined),
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Registo local de demonstração: não executa uma cobrança nem uma transferência.',
+            style: TextStyle(color: YafikaColors.textMuted, fontSize: 11),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(dialogContext),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: YafikaColors.wine),
+          onPressed: () => Navigator.pop(dialogContext, controller.text.trim()),
+          child: const Text('REGISTAR'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+
+  if (reference == null || reference.trim().isEmpty) {
+    return null;
+  }
+  return reference.trim();
+}
+
+class CommissionSettingsCard extends StatefulWidget {
+  final AppStore store;
+
+  const CommissionSettingsCard({super.key, required this.store});
+
+  @override
+  State<CommissionSettingsCard> createState() => _CommissionSettingsCardState();
+}
+
+class _CommissionSettingsCardState extends State<CommissionSettingsCard> {
+  late final TextEditingController partnerRateController;
+  late final TextEditingController driverRateController;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    partnerRateController = TextEditingController(
+      text: (widget.store.partnerCommissionRate * 100).toStringAsFixed(0),
+    );
+    driverRateController = TextEditingController(
+      text: (widget.store.driverCommissionRate * 100).toStringAsFixed(0),
+    );
+  }
+
+  @override
+  void dispose() {
+    partnerRateController.dispose();
+    driverRateController.dispose();
+    super.dispose();
+  }
+
+  void saveRates() {
+    double? parseRate(String value) {
+      return double.tryParse(value.trim().replaceAll(',', '.'));
+    }
+
+    final partnerRate = parseRate(partnerRateController.text);
+    final driverRate = parseRate(driverRateController.text);
+
+    if (partnerRate == null || driverRate == null) {
+      setState(() {
+        error = 'Informe percentagens numéricas.';
+      });
+      return;
+    }
+
+    final saved = widget.store.configureCommissionRates(
+      partnerRate: partnerRate / 100,
+      driverRate: driverRate / 100,
+    );
+    if (!saved) {
+      setState(() {
+        error =
+            'As percentagens devem ser iguais ou superiores a 0 e inferiores a 100.';
+      });
+      return;
+    }
+
+    setState(() {
+      error = null;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Comissões actualizadas para novos pedidos. Pedidos existentes mantêm as taxas registadas.',
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: YafikaColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Comissões do piloto (configuráveis)',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'A Yafika retém uma comissão sobre os produtos e outra sobre a entrega. Estes valores são propostas demonstrativas, não tarifas aprovadas.',
+            style: TextStyle(
+              color: YafikaColors.textMuted,
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: partnerRateController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(labelText: 'Parceiro (%)'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: driverRateController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: const InputDecoration(labelText: 'Entrega (%)'),
+                ),
+              ),
+            ],
+          ),
+          if (error != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              error!,
+              style: const TextStyle(
+                color: YafikaColors.red,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: YafikaColors.wine,
+                side: const BorderSide(color: YafikaColors.wine),
+              ),
+              onPressed: saveRates,
+              child: const Text('GUARDAR TAXAS PARA NOVOS PEDIDOS'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class FinancialOverviewCard extends StatelessWidget {
+  final AppStore store;
+
+  const FinancialOverviewCard({super.key, required this.store});
+
+  @override
+  Widget build(BuildContext context) {
+    final receivedOrders = store.orders
+        .where(
+          (order) =>
+              order.paymentCollectionStatus == PaymentCollectionStatus.received,
+        )
+        .toList();
+    final confirmedTotal = receivedOrders.fold<double>(
+      0,
+      (total, order) => total + order.grandTotal,
+    );
+    final yafikaCommissions = receivedOrders.fold<double>(
+      0,
+      (total, order) => total + order.yafikaCommissionRevenue,
+    );
+    final partnerDue = store.orders
+        .where(
+          (order) => order.partnerSettlementStatus == SettlementStatus.eligible,
+        )
+        .fold<double>(0, (total, order) => total + order.partnerNetAmount);
+    final driverDue = store.orders
+        .where((order) => order.driverPayoutStatus == SettlementStatus.eligible)
+        .fold<double>(0, (total, order) => total + order.driverNetAmount);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: YafikaColors.wineSoft,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Resumo financeiro (MT)',
+            style: TextStyle(
+              color: YafikaColors.wineDark,
+              fontSize: 17,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+          const SizedBox(height: 8),
+          PriceLine(
+            label: 'Recebimentos confirmados (demo)',
+            value: confirmedTotal,
+          ),
+          PriceLine(
+            label: 'Comissões estimadas em pagamentos confirmados',
+            value: yafikaCommissions,
+            strong: true,
+          ),
+          PriceLine(
+            label: 'Parceiros elegíveis por liquidar',
+            value: partnerDue,
+          ),
+          PriceLine(label: 'Motoboys elegíveis por liquidar', value: driverDue),
+          const SizedBox(height: 6),
+          const Text(
+            'Tarifas dos operadores não configuradas. As comissões apresentadas não são lucro líquido nem comprovam fundos recebidos.',
+            style: TextStyle(
+              color: YafikaColors.textMuted,
+              fontSize: 11,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class AdminFinancialOrderCard extends StatelessWidget {
+  final AppStore store;
+  final YafikaOrder order;
+
+  const AdminFinancialOrderCard({
+    super.key,
+    required this.store,
+    required this.order,
+  });
+
+  Future<void> _confirmCollection(BuildContext context) async {
+    final reference = await _askForFinancialReference(
+      context,
+      title: 'Confirmar recebimento (demo)',
+      description:
+          'Confirme apenas se a equipa verificou o recebimento fora desta demonstração.',
+    );
+    if (!context.mounted || reference == null) {
+      return;
+    }
+
+    if (!store.confirmPaymentCollection(order: order, reference: reference)) {
+      _showError(context, 'Não foi possível confirmar este recebimento.');
+    }
+  }
+
+  Future<void> _registerPartnerSettlement(BuildContext context) async {
+    final reference = await _askForFinancialReference(
+      context,
+      title: 'Registar liquidação do parceiro',
+      description:
+          'Faça a transferência fora da aplicação e introduza a referência para registo demonstrativo.',
+    );
+    if (!context.mounted || reference == null) {
+      return;
+    }
+
+    if (!store.registerPartnerSettlement(order: order, reference: reference)) {
+      _showError(
+        context,
+        'O parceiro ainda não está elegível para liquidação.',
+      );
+    }
+  }
+
+  Future<void> _registerDriverPayout(BuildContext context) async {
+    final reference = await _askForFinancialReference(
+      context,
+      title: 'Registar pagamento do motoboy',
+      description:
+          'Faça a transferência fora da aplicação e introduza a referência para registo demonstrativo.',
+    );
+    if (!context.mounted || reference == null) {
+      return;
+    }
+
+    if (!store.registerDriverPayout(order: order, reference: reference)) {
+      _showError(context, 'O motoboy ainda não está elegível para pagamento.');
+    }
+  }
+
+  void _showError(BuildContext context, String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: YafikaColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      order.id,
+                      style: const TextStyle(fontWeight: FontWeight.w900),
+                    ),
+                    Text(order.customerName),
+                    Text(
+                      order.partnerName,
+                      style: const TextStyle(
+                        color: YafikaColors.textMuted,
+                        fontSize: 11,
+                      ),
+                    ),
+                    Text(
+                      'Total do pedido: ${order.grandTotal.toStringAsFixed(2)} MT',
+                      style: const TextStyle(
+                        color: YafikaColors.wine,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              DropdownButton<OrderStatus>(
+                value: order.status,
+                underline: const SizedBox.shrink(),
+                items: OrderStatus.values
+                    .map(
+                      (status) => DropdownMenuItem(
+                        value: status,
+                        child: Text(
+                          status.label,
+                          style: const TextStyle(fontSize: 11),
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (status) {
+                  if (status != null) {
+                    store.updateOrderStatus(order, status);
+                  }
+                },
+              ),
+            ],
+          ),
+          const Divider(),
+          PriceLine(
+            label:
+                'Produtos • comissão Yafika '
+                '(${order.partnerCommissionRate.percentageLabel}%)',
+            value: order.partnerCommission,
+          ),
+          PriceLine(
+            label: 'Líquido devido ao parceiro',
+            value: order.partnerNetAmount,
+          ),
+          PriceLine(
+            label:
+                'Entrega • comissão Yafika '
+                '(${order.driverCommissionRate.percentageLabel}%)',
+            value: order.driverCommission,
+          ),
+          PriceLine(
+            label: 'Líquido devido ao motoboy',
+            value: order.driverNetAmount,
+          ),
+          PriceLine(
+            label: 'Comissão bruta Yafika',
+            value: order.yafikaCommissionRevenue,
+            strong: true,
+          ),
+          const Text(
+            'Tarifa do operador: por configurar; não incluída nas comissões.',
+            style: TextStyle(color: YafikaColors.textMuted, fontSize: 11),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Pagamento ${order.paymentMethod.label} • estado: '
+            '${order.paymentCollectionStatus.label}',
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
+          Text(
+            'Referência informada pelo cliente: ${order.paymentReference}',
+            style: const TextStyle(color: YafikaColors.textMuted, fontSize: 11),
+          ),
+          if (order.collectionConfirmationReference != null)
+            Text(
+              'Referência de recebimento Yafika: '
+              '${order.collectionConfirmationReference}',
+              style: const TextStyle(fontSize: 11),
+            ),
+          if (order.paymentCollectionStatus ==
+              PaymentCollectionStatus.awaitingConfirmation) ...[
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton.tonal(
+                onPressed: () => _confirmCollection(context),
+                child: const Text('REGISTAR RECEBIMENTO (DEMO)'),
+              ),
+            ),
+          ],
+          const Divider(),
+          Text(
+            'Liquidação do parceiro: ${order.partnerSettlementStatus.label}'
+            '${order.partnerSettlementReference == null ? '' : ' • Ref. ${order.partnerSettlementReference}'}',
+            style: const TextStyle(fontSize: 12),
+          ),
+          if (order.partnerSettlementStatus == SettlementStatus.eligible)
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: () => _registerPartnerSettlement(context),
+                child: const Text('REGISTAR LIQUIDAÇÃO DO PARCEIRO (DEMO)'),
+              ),
+            ),
+          const SizedBox(height: 4),
+          Text(
+            'Pagamento do motoboy: ${order.driverPayoutStatus.label}'
+            '${order.driverPayoutReference == null ? '' : ' • Ref. ${order.driverPayoutReference}'}',
+            style: const TextStyle(fontSize: 12),
+          ),
+          if (order.driverPayoutStatus == SettlementStatus.eligible)
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                onPressed: () => _registerDriverPayout(context),
+                child: const Text('REGISTAR PAGAMENTO DO MOTOBOY (DEMO)'),
+              ),
+            ),
+          if (order.financialHistory.isNotEmpty) ...[
+            const Divider(),
+            const Text(
+              'Histórico financeiro',
+              style: TextStyle(fontWeight: FontWeight.w800),
+            ),
+            ...order.financialHistory.map(
+              (entry) => Text(
+                '${entry.recordedAt.toLocal()} • ${entry.action} • '
+                '${entry.reference} • ${entry.actor}',
+                style: const TextStyle(
+                  color: YafikaColors.textMuted,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 class AdminPage extends StatelessWidget {
   final AppStore store;
   final bool rootMode;
 
-  const AdminPage({
-    super.key,
-    required this.store,
-    this.rootMode = false,
-  });
+  const AdminPage({super.key, required this.store, this.rootMode = false});
 
   @override
   Widget build(BuildContext context) {
@@ -3221,16 +3575,12 @@ class AdminPage extends StatelessWidget {
         return Scaffold(
           appBar: AppBar(
             automaticallyImplyLeading: !rootMode,
-            title: const Text(
-              'Yafika Admin',
-            ),
+            title: const Text('Yafika Admin'),
             actions: [
               if (rootMode)
                 IconButton(
                   onPressed: store.logout,
-                  icon: const Icon(
-                    Icons.logout,
-                  ),
+                  icon: const Icon(Icons.logout),
                 ),
             ],
           ),
@@ -3239,16 +3589,12 @@ class AdminPage extends StatelessWidget {
             children: [
               const Text(
                 'Dashboard',
-                style: TextStyle(
-                  fontSize: 26,
-                  fontWeight: FontWeight.w900,
-                ),
+                style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 18),
               GridView.count(
                 shrinkWrap: true,
-                physics:
-                    const NeverScrollableScrollPhysics(),
+                physics: const NeverScrollableScrollPhysics(),
                 crossAxisCount: 2,
                 childAspectRatio: 1.55,
                 crossAxisSpacing: 12,
@@ -3271,129 +3617,23 @@ class AdminPage extends StatelessWidget {
                   ),
                   MetricCard(
                     title: 'Entregues',
-                    value:
-                        '${store.countByStatus(OrderStatus.delivered)}',
+                    value: '${store.countByStatus(OrderStatus.delivered)}',
                     icon: Icons.check_circle_outline,
                   ),
                 ],
               ),
+              const SizedBox(height: 18),
+              CommissionSettingsCard(store: store),
+              const SizedBox(height: 12),
+              FinancialOverviewCard(store: store),
               const SizedBox(height: 28),
               const Text(
-                'Pedidos recentes',
-                style: TextStyle(
-                  fontSize: 19,
-                  fontWeight: FontWeight.w900,
-                ),
+                'Pedidos e livro financeiro',
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w900),
               ),
               const SizedBox(height: 12),
               ...store.orders.map(
-                (order) => Container(
-                  margin:
-                      const EdgeInsets.only(bottom: 10),
-                  padding:
-                      const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius:
-                        BorderRadius.circular(15),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment:
-                                  CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  order.id,
-                                  style: const TextStyle(
-                                    fontWeight:
-                                        FontWeight.w900,
-                                  ),
-                                ),
-                                Text(
-                                  order.customerName,
-                                ),
-                                Text(
-                                  order.partnerName,
-                                  style: const TextStyle(
-                                    color: YafikaColors.textMuted,
-                                    fontSize: 11,
-                                  ),
-                                ),
-                                Text(
-                                  '${order.grandTotal.toStringAsFixed(0)} MT',
-                                  style: const TextStyle(
-                                    color:
-                                        YafikaColors.wine,
-                                    fontWeight:
-                                        FontWeight.bold,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          DropdownButton<OrderStatus>(
-                            value: order.status,
-                            underline:
-                                const SizedBox.shrink(),
-                            items: OrderStatus.values
-                                .map(
-                                  (status) =>
-                                      DropdownMenuItem(
-                                    value: status,
-                                    child: Text(
-                                      status.label,
-                                      style:
-                                          const TextStyle(
-                                        fontSize: 11,
-                                      ),
-                                    ),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (status) {
-                              if (status == null) {
-                                return;
-                              }
-
-                              store.updateOrderStatus(
-                                order,
-                                status,
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                      const Divider(),
-                      Row(
-                        mainAxisAlignment:
-                            MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'Entrega: ${order.deliveryFee.toStringAsFixed(0)} MT',
-                            style: const TextStyle(
-                              fontSize: 11,
-                            ),
-                          ),
-                          Text(
-                            'Motorista: ${order.driverPayoutStatus.label}',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w800,
-                              color: order.driverPayoutStatus ==
-                                      DriverPayoutStatus.paid
-                                  ? YafikaColors.green
-                                  : YafikaColors.orange,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
+                (order) => AdminFinancialOrderCard(store: store, order: order),
               ),
             ],
           ),
@@ -3426,32 +3666,20 @@ class MetricCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: YafikaColors.border,
-        ),
+        border: Border.all(color: YafikaColors.border),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment:
-            MainAxisAlignment.spaceBetween,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Icon(
-            icon,
-            color: YafikaColors.wine,
-          ),
+          Icon(icon, color: YafikaColors.wine),
           Text(
             value,
-            style: const TextStyle(
-              fontSize: 25,
-              fontWeight: FontWeight.w900,
-            ),
+            style: const TextStyle(fontSize: 25, fontWeight: FontWeight.w900),
           ),
           Text(
             title,
-            style: const TextStyle(
-              color: YafikaColors.textMuted,
-              fontSize: 12,
-            ),
+            style: const TextStyle(color: YafikaColors.textMuted, fontSize: 12),
           ),
         ],
       ),
@@ -3476,20 +3704,15 @@ class OperationalOrderCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(
-        bottom: 14,
-      ),
+      margin: const EdgeInsets.only(bottom: 14),
       padding: const EdgeInsets.all(17),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(17),
-        border: Border.all(
-          color: YafikaColors.border,
-        ),
+        border: Border.all(color: YafikaColors.border),
       ),
       child: Column(
-        crossAxisAlignment:
-            CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
@@ -3514,39 +3737,25 @@ class OperationalOrderCard extends StatelessWidget {
           const SizedBox(height: 12),
           Text(
             order.customerName,
-            style: const TextStyle(
-              fontWeight: FontWeight.w700,
-            ),
+            style: const TextStyle(fontWeight: FontWeight.w700),
           ),
           Text(
             '${order.address} • ${order.deliveryZone}',
-            style: const TextStyle(
-              color: YafikaColors.textMuted,
-            ),
+            style: const TextStyle(color: YafikaColors.textMuted),
           ),
           const SizedBox(height: 10),
           Text(
             '${order.items.length} itens • Produtos ${order.productsTotal.toStringAsFixed(0)} MT',
-            style: const TextStyle(
-              fontWeight: FontWeight.w700,
-            ),
+            style: const TextStyle(fontWeight: FontWeight.w700),
           ),
-          if (extra != null) ...[
-            const SizedBox(height: 10),
-            extra!,
-          ],
+          if (extra != null) ...[const SizedBox(height: 10), extra!],
           const SizedBox(height: 15),
           SizedBox(
             width: double.infinity,
             child: FilledButton(
-              style: FilledButton.styleFrom(
-                backgroundColor:
-                    YafikaColors.wine,
-              ),
+              style: FilledButton.styleFrom(backgroundColor: YafikaColors.wine),
               onPressed: onPressed,
-              child: Text(
-                buttonLabel,
-              ),
+              child: Text(buttonLabel),
             ),
           ),
         ],
@@ -3573,30 +3782,20 @@ class EmptyView extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(35),
         child: Column(
-          mainAxisAlignment:
-              MainAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              icon,
-              size: 70,
-              color: YafikaColors.wine,
-            ),
+            Icon(icon, size: 70, color: YafikaColors.wine),
             const SizedBox(height: 18),
             Text(
               title,
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w900,
-              ),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
             ),
             const SizedBox(height: 8),
             Text(
               subtitle,
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                color: YafikaColors.textMuted,
-              ),
+              style: const TextStyle(color: YafikaColors.textMuted),
             ),
           ],
         ),
